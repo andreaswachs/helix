@@ -264,6 +264,85 @@ impl Default for FileExplorerConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum FileTreeMode {
+    #[default]
+    Floating,
+    Side,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum FileTreePosition {
+    #[default]
+    Left,
+    Right,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct FileTreeIconsConfig {
+    pub directory: String,
+    pub directory_open: String,
+    pub file: String,
+    #[serde(default)]
+    pub extensions: HashMap<String, String>,
+    #[serde(default)]
+    pub filenames: HashMap<String, String>,
+}
+
+impl Default for FileTreeIconsConfig {
+    fn default() -> Self {
+        Self {
+            directory: "▸".into(),
+            directory_open: "▾".into(),
+            file: " ".into(),
+            extensions: HashMap::new(),
+            filenames: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct FileTreeConfig {
+    /// Display mode: floating overlay or side panel
+    pub mode: FileTreeMode,
+    /// Position of side panel (left or right)
+    pub position: FileTreePosition,
+    /// Width of the file tree panel in columns
+    pub width: u16,
+    /// Whether to show file type icons
+    pub show_icons: bool,
+    /// Icon configuration
+    pub icons: FileTreeIconsConfig,
+    /// Whether to hide hidden files (dotfiles)
+    pub hidden: bool,
+    /// Whether to follow symbolic links
+    pub follow_symlinks: bool,
+    /// Whether to respect .ignore files
+    pub ignore: bool,
+    /// Whether to respect .gitignore files
+    pub git_ignore: bool,
+}
+
+impl Default for FileTreeConfig {
+    fn default() -> Self {
+        Self {
+            mode: FileTreeMode::default(),
+            position: FileTreePosition::default(),
+            width: 30,
+            show_icons: true,
+            icons: FileTreeIconsConfig::default(),
+            hidden: true,
+            follow_symlinks: false,
+            ignore: true,
+            git_ignore: true,
+        }
+    }
+}
+
 fn serialize_alphabet<S>(alphabet: &[char], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
@@ -362,6 +441,8 @@ pub struct Config {
     pub auto_info: bool,
     pub file_picker: FilePickerConfig,
     pub file_explorer: FileExplorerConfig,
+    /// File tree configuration
+    pub file_tree: FileTreeConfig,
     /// Configuration of the statusline elements
     pub statusline: StatusLineConfig,
     /// Shape for cursor in each mode
@@ -1110,6 +1191,7 @@ impl Default for Config {
             auto_info: true,
             file_picker: FilePickerConfig::default(),
             file_explorer: FileExplorerConfig::default(),
+            file_tree: FileTreeConfig::default(),
             statusline: StatusLineConfig::default(),
             cursor_shape: CursorShapeConfig::default(),
             true_color: false,

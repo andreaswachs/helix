@@ -2742,6 +2742,37 @@ fn echo(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
     Ok(())
 }
 
+fn file_tree_toggle(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let root = helix_core::find_workspace().0;
+    if !root.exists() {
+        bail!("Workspace directory does not exist");
+    }
+
+    let callback = async move {
+        let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                // Toggle: remove if exists, otherwise create
+                if compositor.remove(ui::file_tree::ID).is_some() {
+                    return; // Was open, now closed
+                }
+                let tree = ui::FileTree::new(root, editor);
+                compositor.push(Box::new(overlaid(tree)));
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
 fn noop(_cx: &mut compositor::Context, _args: Args, _event: PromptEvent) -> anyhow::Result<()> {
     Ok(())
 }
@@ -3807,6 +3838,14 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
             positionals: (1, None),
             ..Signature::DEFAULT
         },
+    },
+    TypableCommand {
+        name: "file-tree-toggle",
+        aliases: &["ft", "tree"],
+        doc: "Toggle the file tree panel.",
+        fun: file_tree_toggle,
+        completer: CommandCompleter::none(),
+        signature: Signature::DEFAULT,
     },
     TypableCommand {
         name: "noop",
