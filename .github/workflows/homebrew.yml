@@ -1,0 +1,119 @@
+---
+name: Update Homebrew Tap
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to update formula for'
+        required: true
+        type: string
+
+env:
+  TAP_REPO: andreaswachs/homebrew-tap
+  FORMULA_NAME: helix
+
+jobs:
+  update-homebrew:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get release info
+        id: release
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${{ github.event.release.tag_name }}"
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Updating formula for tag: $TAG"
+
+      - name: Download release assets info
+        id: assets
+        run: |
+          TAG="${{ steps.release.outputs.tag }}"
+
+          # Get macOS ARM64 tarball URL and SHA256
+          MACOS_ARM_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/helix-${TAG}-aarch64-macos.tar.xz"
+          MACOS_ARM_SHA=$(curl -sL "$MACOS_ARM_URL" | sha256sum | cut -d' ' -f1)
+
+          # Get macOS x86_64 tarball URL and SHA256
+          MACOS_X64_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/helix-${TAG}-x86_64-macos.tar.xz"
+          MACOS_X64_SHA=$(curl -sL "$MACOS_X64_URL" | sha256sum | cut -d' ' -f1)
+
+          # Get Linux x86_64 tarball URL and SHA256
+          LINUX_X64_URL="https://github.com/${{ github.repository }}/releases/download/${TAG}/helix-${TAG}-x86_64-linux.tar.xz"
+          LINUX_X64_SHA=$(curl -sL "$LINUX_X64_URL" | sha256sum | cut -d' ' -f1)
+
+          echo "macos_arm_url=$MACOS_ARM_URL" >> $GITHUB_OUTPUT
+          echo "macos_arm_sha=$MACOS_ARM_SHA" >> $GITHUB_OUTPUT
+          echo "macos_x64_url=$MACOS_X64_URL" >> $GITHUB_OUTPUT
+          echo "macos_x64_sha=$MACOS_X64_SHA" >> $GITHUB_OUTPUT
+          echo "linux_x64_url=$LINUX_X64_URL" >> $GITHUB_OUTPUT
+          echo "linux_x64_sha=$LINUX_X64_SHA" >> $GITHUB_OUTPUT
+
+      - name: Checkout homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.TAP_REPO }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update formula
+        run: |
+          TAG="${{ steps.release.outputs.tag }}"
+
+          cat > homebrew-tap/Formula/helix.rb << 'EOF'
+          class Helix < Formula
+            desc "Post-modern modal text editor with file tree viewer"
+            homepage "https://github.com/andreaswachs/helix"
+            license "MPL-2.0"
+            version "${{ steps.release.outputs.tag }}"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "${{ steps.assets.outputs.macos_arm_url }}"
+                sha256 "${{ steps.assets.outputs.macos_arm_sha }}"
+              else
+                url "${{ steps.assets.outputs.macos_x64_url }}"
+                sha256 "${{ steps.assets.outputs.macos_x64_sha }}"
+              end
+            end
+
+            on_linux do
+              url "${{ steps.assets.outputs.linux_x64_url }}"
+              sha256 "${{ steps.assets.outputs.linux_x64_sha }}"
+            end
+
+            def install
+              bin.install "hx"
+              libexec.install "runtime"
+              (etc/"helix").mkpath
+            end
+
+            def caveats
+              <<~EOS
+                To use helix, set the runtime path in your shell config:
+                  export HELIX_RUNTIME="#{opt_libexec}/runtime"
+
+                Or add to ~/.config/helix/config.toml:
+                  # Configuration options at https://docs.helix-editor.com/configuration.html
+              EOS
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/hx --version")
+            end
+          end
+          EOF
+
+      - name: Commit and push
+        run: |
+          cd homebrew-tap
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add Formula/helix.rb
+          git commit -m "Update helix to ${{ steps.release.outputs.tag }}" || echo "No changes to commit"
+          git push
