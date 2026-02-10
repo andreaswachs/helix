@@ -1,6 +1,6 @@
 use crate::{
     compositor::{Component, Compositor, Context, Event, EventResult},
-    ctrl, key, shift,
+    ctrl, key,
     ui::{
         document::render_document,
         text_decorations::DecorationManager,
@@ -184,6 +184,19 @@ fn is_clear_line_event(event: &helix_view::input::KeyEvent) -> bool {
     if let KeyCode::Char('u') = event.code {
         event.modifiers.contains(KeyModifiers::CONTROL)
             || event.modifiers.contains(KeyModifiers::SUPER)
+    } else {
+        false
+    }
+}
+
+/// Check if an event is uppercase Y (Shift+Y in any form terminals may send it)
+fn is_uppercase_y_event(event: &helix_view::input::KeyEvent) -> bool {
+    if let KeyCode::Char(c) = event.code {
+        // Match uppercase Y regardless of how the terminal sends it:
+        // - 'Y' with no modifiers
+        // - 'Y' with SHIFT modifier
+        // - 'y' with SHIFT modifier
+        c == 'Y' || (c == 'y' && event.modifiers.contains(KeyModifiers::SHIFT))
     } else {
         false
     }
@@ -1943,14 +1956,16 @@ impl Component for FileTree {
                         self.refresh(cx.editor);
                         return EventResult::Consumed(None);
                     }
-                    // Copy relative path to clipboard
-                    key!('y') => {
-                        self.copy_relative_path_to_clipboard(cx);
+                    // Copy paths to clipboard
+                    // Use guard patterns to distinguish lowercase y vs uppercase Y
+                    _ if is_uppercase_y_event(&event) => {
+                        // Uppercase Y: copy absolute path
+                        self.copy_absolute_path_to_clipboard(cx);
                         return EventResult::Consumed(None);
                     }
-                    // Copy absolute path to clipboard (Shift+Y)
-                    shift!('y') => {
-                        self.copy_absolute_path_to_clipboard(cx);
+                    key!('y') => {
+                        // Lowercase y: copy relative path
+                        self.copy_relative_path_to_clipboard(cx);
                         return EventResult::Consumed(None);
                     }
                     // Toggle preview
