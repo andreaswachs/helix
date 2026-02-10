@@ -422,8 +422,50 @@ impl FileTree {
         };
         // Expand the root by default
         tree.expanded.insert(root);
-        tree.rebuild_entries(editor);
+
+        // Try to jump to the current file automatically
+        tree.auto_reveal_current_file(editor);
+
         tree
+    }
+
+    /// Automatically reveal and select the current file in the tree (silent, no messages)
+    fn auto_reveal_current_file(&mut self, editor: &Editor) {
+        // Get the current view's document
+        let view = editor.tree.get(editor.tree.focus);
+        let doc = &editor.documents[&view.doc];
+
+        if let Some(path) = doc.path() {
+            let path = path.to_path_buf();
+
+            // Check if the file is within our root directory
+            if !path.starts_with(&self.root) {
+                // File is outside the tree root, just build normally
+                self.rebuild_entries(editor);
+                return;
+            }
+
+            // Expand all parent directories to reveal the file
+            let mut current = path.clone();
+            while current != self.root {
+                if let Some(parent) = current.parent() {
+                    self.expanded.insert(parent.to_path_buf());
+                    current = parent.to_path_buf();
+                } else {
+                    break;
+                }
+            }
+
+            self.rebuild_entries(editor);
+
+            // Find and select the file
+            if let Some(pos) = self.entries.iter().position(|e| e.path == path) {
+                self.cursor = pos;
+            }
+        } else {
+            // No file path, just build the tree normally
+            self.rebuild_entries(editor);
+        }
     }
 
     /// Create a FileTree from saved state (for resume functionality)
