@@ -1,6 +1,6 @@
 use crate::{
     compositor::{Component, Compositor, Context, Event, EventResult},
-    ctrl, key,
+    ctrl, key, shift,
     ui::{
         document::render_document,
         text_decorations::DecorationManager,
@@ -1948,8 +1948,8 @@ impl Component for FileTree {
                         self.copy_relative_path_to_clipboard(cx);
                         return EventResult::Consumed(None);
                     }
-                    // Copy absolute path to clipboard
-                    key!('Y') => {
+                    // Copy absolute path to clipboard (Shift+Y)
+                    shift!('y') => {
                         self.copy_absolute_path_to_clipboard(cx);
                         return EventResult::Consumed(None);
                     }
