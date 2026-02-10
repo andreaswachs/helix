@@ -21,7 +21,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::Command,
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use tui::{
     buffer::Buffer as Surface,
@@ -31,6 +31,26 @@ use tui::{
 
 /// Minimum width to show preview pane
 pub const MIN_AREA_WIDTH_FOR_PREVIEW: u16 = 72;
+
+/// Global storage for the last file tree state (for resume functionality)
+static LAST_FILE_TREE_STATE: Mutex<Option<FileTreeState>> = Mutex::new(None);
+
+/// Save the file tree state for later resumption
+pub fn save_last_state(state: FileTreeState) {
+    if let Ok(mut guard) = LAST_FILE_TREE_STATE.lock() {
+        *guard = Some(state);
+    }
+}
+
+/// Get the last saved file tree state
+pub fn get_last_state() -> Option<FileTreeState> {
+    LAST_FILE_TREE_STATE.lock().ok().and_then(|guard| guard.clone())
+}
+
+/// Check if there's a saved state available
+pub fn has_saved_state() -> bool {
+    LAST_FILE_TREE_STATE.lock().ok().map_or(false, |guard| guard.is_some())
+}
 /// Maximum file size to preview (10MB)
 pub const MAX_FILE_SIZE_FOR_PREVIEW: u64 = 10 * 1024 * 1024;
 
@@ -56,6 +76,27 @@ impl CachedPreview {
 }
 
 pub const ID: &str = "file-tree";
+
+/// Saved state of the file tree for resumption
+#[derive(Debug, Clone)]
+pub struct FileTreeState {
+    pub root: PathBuf,
+    pub expanded: HashSet<PathBuf>,
+    pub cursor: usize,
+    pub scroll_offset: usize,
+    pub input_mode: SavedInputMode,
+    pub input_buffer: String,
+    pub show_preview: bool,
+    pub preview_scroll: usize,
+}
+
+/// Simplified input mode for saving (excludes transient states)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SavedInputMode {
+    Normal,
+    Search,
+    GoToFolder,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum InputMode {
@@ -105,6 +146,187 @@ struct SearchResult {
     path: PathBuf,
     is_dir: bool,
     relative_path: String,
+    score: i64,
+}
+
+/// Fuzzy match result with score
+struct FuzzyMatch {
+    score: i64,
+}
+
+/// Perform fzf-style fuzzy matching on a string
+/// Returns None if no match, Some(FuzzyMatch) with score if matched
+fn fuzzy_match(pattern: &str, text: &str) -> Option<FuzzyMatch> {
+    if pattern.is_empty() {
+        return Some(FuzzyMatch { score: 0 });
+    }
+
+    let pattern_lower: Vec<char> = pattern.to_lowercase().chars().collect();
+    let text_lower: Vec<char> = text.to_lowercase().chars().collect();
+    let text_chars: Vec<char> = text.chars().collect();
+
+    if pattern_lower.is_empty() {
+        return Some(FuzzyMatch { score: 0 });
+    }
+
+    // First pass: check if all pattern chars exist in text in order
+    let mut pi = 0;
+    for &c in text_lower.iter() {
+        if pi < pattern_lower.len() && c == pattern_lower[pi] {
+            pi += 1;
+        }
+    }
+
+    if pi != pattern_lower.len() {
+        return None; // Not all pattern chars found
+    }
+
+    // Second pass: find optimal match positions
+    let positions = find_best_match_positions(&pattern_lower, &text_lower, &text_chars);
+
+    // Calculate score based on match quality
+    let score = calculate_match_score(&positions, &text_chars, text.len());
+
+    Some(FuzzyMatch { score })
+}
+
+/// Find the best match positions that maximize the score
+fn find_best_match_positions(pattern: &[char], text_lower: &[char], text_chars: &[char]) -> Vec<usize> {
+    let n = pattern.len();
+
+    if n == 0 {
+        return Vec::new();
+    }
+
+    // We use a greedy approach with lookahead for performance
+    let mut positions = Vec::with_capacity(n);
+    let mut last_match: Option<usize> = None;
+
+    // Find all possible positions for each pattern char
+    let mut char_positions: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (i, &c) in text_lower.iter().enumerate() {
+        for (pi, &pc) in pattern.iter().enumerate() {
+            if c == pc {
+                char_positions[pi].push(i);
+            }
+        }
+    }
+
+    // Greedy selection with preference for:
+    // 1. Consecutive matches
+    // 2. Word boundary matches
+    // 3. Earlier positions (shorter path prefix)
+    for pi in 0..n {
+        let valid_positions: Vec<usize> = char_positions[pi]
+            .iter()
+            .copied()
+            .filter(|&pos| last_match.map_or(true, |last| pos > last))
+            .collect();
+
+        if valid_positions.is_empty() {
+            // Fallback: use first available position after last match
+            break;
+        }
+
+        // Score each valid position
+        let best_pos = valid_positions
+            .iter()
+            .copied()
+            .max_by_key(|&pos| {
+                let mut pos_score: i64 = 0;
+
+                // Bonus for consecutive match
+                if let Some(last) = last_match {
+                    if pos == last + 1 {
+                        pos_score += 100;
+                    }
+                }
+
+                // Bonus for word boundary
+                if is_word_boundary(pos, text_chars) {
+                    pos_score += 80;
+                }
+
+                // Bonus for being at start
+                if pos == 0 {
+                    pos_score += 70;
+                }
+
+                // Penalty for distance from last match (prefer closer)
+                if let Some(last) = last_match {
+                    pos_score -= (pos - last - 1) as i64;
+                }
+
+                // Small penalty for later positions
+                pos_score -= (pos / 10) as i64;
+
+                pos_score
+            })
+            .unwrap_or(valid_positions[0]);
+
+        positions.push(best_pos);
+        last_match = Some(best_pos);
+    }
+
+    positions
+}
+
+/// Check if position is at a word boundary
+fn is_word_boundary(pos: usize, text: &[char]) -> bool {
+    if pos == 0 {
+        return true;
+    }
+    let prev = text[pos - 1];
+    matches!(prev, '/' | '\\' | '.' | '_' | '-' | ' ')
+}
+
+/// Calculate the match score based on positions
+fn calculate_match_score(positions: &[usize], text: &[char], text_len: usize) -> i64 {
+    if positions.is_empty() {
+        return 0;
+    }
+
+    let mut score: i64 = 100; // Base score for a match
+
+    // Bonus for consecutive matches
+    let mut consecutive_count = 0;
+    for i in 1..positions.len() {
+        if positions[i] == positions[i - 1] + 1 {
+            consecutive_count += 1;
+            score += 20 + consecutive_count * 5; // Increasing bonus for longer consecutive runs
+        } else {
+            consecutive_count = 0;
+        }
+    }
+
+    // Bonus for word boundary matches
+    for &pos in positions {
+        if is_word_boundary(pos, text) {
+            score += 15;
+        }
+    }
+
+    // Bonus for match at start
+    if positions[0] == 0 {
+        score += 25;
+    }
+
+    // Bonus for matching at the end (filename usually)
+    let last_slash = text.iter().rposition(|&c| c == '/' || c == '\\').unwrap_or(0);
+    let matches_after_slash = positions.iter().filter(|&&p| p > last_slash).count();
+    score += (matches_after_slash as i64) * 10;
+
+    // Penalty for total gap size (unmatched chars between matches)
+    if positions.len() > 1 {
+        let total_span = positions[positions.len() - 1] - positions[0] + 1;
+        let gap_penalty = (total_span - positions.len()) as i64;
+        score -= gap_penalty;
+    }
+
+    // Slight preference for shorter paths
+    score -= (text_len / 20) as i64;
+
+    score
 }
 
 pub struct FileTree {
@@ -167,6 +389,76 @@ impl FileTree {
         tree.expanded.insert(root);
         tree.rebuild_entries(editor);
         tree
+    }
+
+    /// Create a FileTree from saved state (for resume functionality)
+    pub fn from_state(state: FileTreeState, editor: &Editor) -> Self {
+        let git_statuses = Self::load_git_statuses(&state.root);
+        let config = editor.config();
+        let mut tree = Self {
+            entries: Vec::new(),
+            cursor: state.cursor,
+            scroll_offset: state.scroll_offset,
+            root: state.root.clone(),
+            expanded: state.expanded,
+            input_mode: match state.input_mode {
+                SavedInputMode::Normal => InputMode::Normal,
+                SavedInputMode::Search => InputMode::Search,
+                SavedInputMode::GoToFolder => InputMode::GoToFolder,
+            },
+            input_buffer: state.input_buffer.clone(),
+            input_cursor: state.input_buffer.len(),
+            search_results: Vec::new(),
+            rename_target: None,
+            message: Some("Resumed".to_string()),
+            preview_cache: HashMap::new(),
+            read_buffer: Vec::with_capacity(1024),
+            preview_scroll: state.preview_scroll,
+            git_statuses,
+            show_preview: state.show_preview,
+        };
+
+        // Rebuild entries
+        tree.rebuild_entries(editor);
+
+        // If we were in search mode, re-perform the search
+        match tree.input_mode {
+            InputMode::Search => tree.perform_search(&config.file_tree),
+            InputMode::GoToFolder => tree.perform_folder_search(&config.file_tree),
+            _ => {}
+        }
+
+        // Ensure cursor is still valid
+        let len = match tree.input_mode {
+            InputMode::Search | InputMode::GoToFolder => tree.search_results.len(),
+            _ => tree.entries.len(),
+        };
+        if len > 0 && tree.cursor >= len {
+            tree.cursor = len.saturating_sub(1);
+        }
+
+        tree
+    }
+
+    /// Save the current state for later resumption
+    pub fn save_state(&self) -> FileTreeState {
+        let saved_mode = match self.input_mode {
+            InputMode::Search => SavedInputMode::Search,
+            InputMode::GoToFolder => SavedInputMode::GoToFolder,
+            // All other modes save as Normal since they're transient
+            _ => SavedInputMode::Normal,
+        };
+
+        FileTreeState {
+            root: self.root.clone(),
+            expanded: self.expanded.clone(),
+            cursor: self.cursor,
+            scroll_offset: self.scroll_offset,
+            input_mode: saved_mode,
+            input_buffer: self.input_buffer.clone(),
+            show_preview: self.show_preview,
+            preview_scroll: self.preview_scroll,
+        }
     }
 
     /// Load git status for all files in the repository
@@ -354,7 +646,7 @@ impl FileTree {
         }
     }
 
-    /// Perform recursive search
+    /// Perform recursive fuzzy search (fzf-style)
     fn perform_search(&mut self, config: &FileTreeConfig) {
         use ignore::WalkBuilder;
 
@@ -364,54 +656,51 @@ impl FileTree {
             return;
         }
 
-        let query_lower = self.input_buffer.to_lowercase();
+        let query = &self.input_buffer;
 
         let mut walk_builder = WalkBuilder::new(&self.root);
-        let results: Vec<_> = walk_builder
+        let mut results: Vec<_> = walk_builder
             .hidden(config.hidden)
             .follow_links(config.follow_symlinks)
             .git_ignore(config.git_ignore)
             .ignore(config.ignore)
-            .sort_by_file_name(|a, b| a.cmp(b))
             .build()
             .filter_map(|entry| entry.ok())
             .filter(|entry| entry.path() != self.root)
-            .filter(|entry| {
-                // Match against file/folder name or full relative path
-                let path = entry.path();
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_lowercase())
-                    .unwrap_or_default();
-                let relative = path
-                    .strip_prefix(&self.root)
-                    .map(|p| p.to_string_lossy().to_lowercase())
-                    .unwrap_or_default();
-
-                name.contains(&query_lower) || relative.contains(&query_lower)
-            })
-            .take(100) // Limit results to avoid performance issues
-            .map(|entry| {
+            .filter_map(|entry| {
                 let path = entry.path().to_path_buf();
                 let is_dir = path.is_dir();
                 let relative_path = path
                     .strip_prefix(&self.root)
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|_| path.to_string_lossy().to_string());
-                SearchResult {
+
+                // Fuzzy match against the relative path
+                fuzzy_match(query, &relative_path).map(|m| SearchResult {
                     path,
                     is_dir,
                     relative_path,
-                }
+                    score: m.score,
+                })
             })
             .collect();
+
+        // Sort by score (highest first), then by path length (shorter first)
+        results.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| a.relative_path.len().cmp(&b.relative_path.len()))
+        });
+
+        // Limit results
+        results.truncate(100);
 
         self.search_results = results;
         self.cursor = 0;
         self.scroll_offset = 0;
     }
 
-    /// Perform recursive search for folders only
+    /// Perform recursive fuzzy search for folders only (fzf-style)
     fn perform_folder_search(&mut self, config: &FileTreeConfig) {
         use ignore::WalkBuilder;
 
@@ -421,47 +710,44 @@ impl FileTree {
             return;
         }
 
-        let query_lower = self.input_buffer.to_lowercase();
+        let query = &self.input_buffer;
 
         let mut walk_builder = WalkBuilder::new(&self.root);
-        let results: Vec<_> = walk_builder
+        let mut results: Vec<_> = walk_builder
             .hidden(config.hidden)
             .follow_links(config.follow_symlinks)
             .git_ignore(config.git_ignore)
             .ignore(config.ignore)
-            .sort_by_file_name(|a, b| a.cmp(b))
             .build()
             .filter_map(|entry| entry.ok())
             .filter(|entry| entry.path() != self.root)
             .filter(|entry| entry.path().is_dir()) // Only directories
-            .filter(|entry| {
-                // Match against folder name or full relative path
-                let path = entry.path();
-                let name = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_lowercase())
-                    .unwrap_or_default();
-                let relative = path
-                    .strip_prefix(&self.root)
-                    .map(|p| p.to_string_lossy().to_lowercase())
-                    .unwrap_or_default();
-
-                name.contains(&query_lower) || relative.contains(&query_lower)
-            })
-            .take(100)
-            .map(|entry| {
+            .filter_map(|entry| {
                 let path = entry.path().to_path_buf();
                 let relative_path = path
                     .strip_prefix(&self.root)
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|_| path.to_string_lossy().to_string());
-                SearchResult {
+
+                // Fuzzy match against the relative path
+                fuzzy_match(query, &relative_path).map(|m| SearchResult {
                     path,
                     is_dir: true,
                     relative_path,
-                }
+                    score: m.score,
+                })
             })
             .collect();
+
+        // Sort by score (highest first), then by path length (shorter first)
+        results.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| a.relative_path.len().cmp(&b.relative_path.len()))
+        });
+
+        // Limit results
+        results.truncate(100);
 
         self.search_results = results;
         self.cursor = 0;
@@ -1017,7 +1303,7 @@ impl FileTree {
             ("Search & Jump", ""),
             ("  /", "Search files"),
             ("  Ctrl+g", "Go to folder"),
-            ("  gf", "Jump to current file"),
+            ("  f", "Jump to current file"),
             ("", ""),
             ("File Operations", ""),
             ("  a", "Add file/directory"),
@@ -1034,7 +1320,7 @@ impl FileTree {
             ("  Ctrl+s", "Open in h-split"),
             ("  Ctrl+v", "Open in v-split"),
             ("  ?", "Toggle help"),
-            ("  q/Esc", "Close"),
+            ("  q/Esc", "Close (use :ftr to resume)"),
         ];
 
         for (i, (key, desc)) in help_lines.iter().take(inner.height as usize).enumerate() {
@@ -1059,8 +1345,11 @@ impl Component for FileTree {
             _ => return EventResult::Ignored(None),
         };
 
+        // Save state before closing
+        let state_to_save = self.save_state();
         let close_fn: crate::compositor::Callback =
-            Box::new(|compositor: &mut Compositor, _cx: &mut Context| {
+            Box::new(move |compositor: &mut Compositor, _cx: &mut Context| {
+                save_last_state(state_to_save.clone());
                 compositor.remove(ID);
             });
 

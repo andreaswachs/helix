@@ -1,64 +1,189 @@
-<div align="center">
+# Helix (Fork with File Tree Viewer)
 
-<h1>
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="logo_dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="logo_light.svg">
-  <img alt="Helix" height="128" src="logo_light.svg">
-</picture>
-</h1>
+This is a **personal fork** of the [Helix editor](https://github.com/helix-editor/helix) with additional features tailored to my workflow. The main addition is a **NeoTree-style file tree viewer** with fuzzy search, preview pane, and git integration.
 
-[![Build status](https://github.com/helix-editor/helix/actions/workflows/build.yml/badge.svg)](https://github.com/helix-editor/helix/actions)
-[![GitHub Release](https://img.shields.io/github/v/release/helix-editor/helix)](https://github.com/helix-editor/helix/releases/latest)
-[![Documentation](https://shields.io/badge/-documentation-452859)](https://docs.helix-editor.com/)
-[![GitHub contributors](https://img.shields.io/github/contributors/helix-editor/helix)](https://github.com/helix-editor/helix/graphs/contributors)
-[![Matrix Space](https://img.shields.io/matrix/helix-community:matrix.org)](https://matrix.to/#/#helix-community:matrix.org)
+For documentation on the core Helix editor, please refer to the [official Helix documentation](https://docs.helix-editor.com/).
 
-</div>
+## Installation
 
-![Screenshot](./screenshot.png)
+### Homebrew (Recommended)
 
-A [Kakoune](https://github.com/mawww/kakoune) / [Neovim](https://github.com/neovim/neovim) inspired editor, written in Rust.
+```bash
+brew tap andreaswachs/tap
+brew install helix
+```
 
-The editing model is very heavily based on Kakoune; during development I found
-myself agreeing with most of Kakoune's design decisions.
+To upgrade:
+```bash
+brew upgrade helix
+```
 
-For more information, see the [website](https://helix-editor.com) or
-[documentation](https://docs.helix-editor.com/).
+### From Source
 
-All shortcuts/keymaps can be found [in the documentation on the website](https://docs.helix-editor.com/keymap.html).
+```bash
+git clone https://github.com/andreaswachs/helix.git
+cd helix
+cargo install --path helix-term --locked
+```
 
-[Troubleshooting](https://github.com/helix-editor/helix/wiki/Troubleshooting)
+Ensure `~/.cargo/bin` is in your `PATH`.
 
-# Features
+---
 
-- Vim-like modal editing
-- Multiple selections
-- Built-in language server support
-- Smart, incremental syntax highlighting and code editing via tree-sitter
+## Fork Features
 
-Although it's primarily a terminal-based editor, I am interested in exploring
-a custom renderer (similar to Emacs) using wgpu.
+### File Tree Viewer
 
-Note: Only certain languages have indentation definitions at the moment. Check
-`runtime/queries/<lang>/` for `indents.scm`.
+A persistent, NeoTree-style file tree panel with preview, fuzzy search, and git status integration.
 
-# Installation
+#### Opening the File Tree
 
-[Installation documentation](https://docs.helix-editor.com/install.html).
+| Command | Description |
+|---------|-------------|
+| `:ft` or `:tree` | Toggle file tree |
+| `:ftr` or `:tree-resume` | Resume last file tree session (restores search, position, state) |
 
-[![Packaging status](https://repology.org/badge/vertical-allrepos/helix-editor.svg?exclude_unsupported=1)](https://repology.org/project/helix-editor/versions)
+Or bind to a key in your `config.toml`:
 
-# Contributing
+```toml
+[keys.normal.space]
+f = "file_tree_toggle"
+"'" = "file_tree_resume"   # Resume last session with Space+'
+```
 
-Contributing guidelines can be found [here](./docs/CONTRIBUTING.md).
+#### Keybindings (Inside File Tree)
 
-# Getting help
+**Navigation:**
+| Key | Action |
+|-----|--------|
+| `j` / `k` or `↑` / `↓` | Move cursor |
+| `h` / `l` or `←` / `→` | Collapse / Expand directory |
+| `Enter` | Open file or toggle directory |
+| `g` | Go to top |
+| `G` | Go to bottom |
+| `Ctrl+d` / `Ctrl+u` | Page down / up |
 
-Your question might already be answered on the [FAQ](https://github.com/helix-editor/helix/wiki/FAQ).
+**Search & Jump:**
+| Key | Action |
+|-----|--------|
+| `/` | Fuzzy search files (fzf-style) |
+| `Ctrl+g` | Go to folder (fuzzy search directories) |
+| `f` | Jump to currently open file |
 
-Discuss the project on the community [Matrix Space](https://matrix.to/#/#helix-community:matrix.org) (make sure to join `#helix-editor:matrix.org` if you're on a client that doesn't support Matrix Spaces yet).
+**File Operations:**
+| Key | Action |
+|-----|--------|
+| `a` | Add file (end with `/` for directory) |
+| `d` | Delete file/directory |
+| `r` | Rename |
+| `y` | Copy path to clipboard |
 
-# Credits
+**Preview:**
+| Key | Action |
+|-----|--------|
+| `p` | Toggle preview pane |
+| `Ctrl+j` / `Ctrl+k` | Scroll preview down / up |
 
-Thanks to [@jakenvac](https://github.com/jakenvac) for designing the logo!
+**Other:**
+| Key | Action |
+|-----|--------|
+| `R` | Refresh tree and git status |
+| `Ctrl+s` | Open in horizontal split |
+| `Ctrl+v` | Open in vertical split |
+| `?` | Toggle help |
+| `q` / `Esc` | Close (state is saved for resume) |
+
+#### Fuzzy Search
+
+The `/` search uses **fzf-style fuzzy matching**:
+
+- **Non-contiguous matching**: Type `srcts` to match `src/components/test.ts`
+- **Case insensitive**: Matches regardless of case
+- **Path-aware**: Searches across full relative path (directories + filename)
+
+Results are scored and sorted with best matches first:
+- Consecutive character matches score higher
+- Matches at word boundaries (`/`, `.`, `_`, `-`) score higher
+- Matches in the filename score higher than directory matches
+- Shorter paths are preferred when scores are equal
+
+**Examples:**
+- `ftrs` matches `helix-term/src/ui/file_tree.rs`
+- `uift` matches `helix-term/src/ui/file_tree.rs`
+- `cmdty` matches `helix-term/src/commands/typed.rs`
+
+#### Configuration
+
+Add to your `~/.config/helix/config.toml`:
+
+```toml
+[editor.file-tree]
+# Display mode: "floating" (overlay) or "side" (persistent panel)
+mode = "floating"
+
+# Panel position for side mode: "left" or "right"
+position = "left"
+
+# Width in columns (for side mode)
+width = 30
+
+# Show file/folder icons
+show-icons = true
+
+# File filtering (inherited from explorer settings)
+hidden = true          # Hide dotfiles
+git-ignore = true      # Respect .gitignore
+ignore = true          # Respect .ignore files
+follow-symlinks = true # Follow symbolic links
+
+[editor.file-tree.icons]
+# Customize directory indicators
+directory = "▸"
+directory-open = "▾"
+file = " "
+
+# Custom icons by file extension
+[editor.file-tree.icons.extensions]
+rs = "🦀"
+py = "🐍"
+js = "📜"
+ts = "📜"
+go = "🐹"
+rb = "💎"
+md = "📝"
+toml = "⚙️"
+json = "📋"
+
+# Custom icons by filename
+[editor.file-tree.icons.filenames]
+"Cargo.toml" = "📦"
+"README.md" = "📖"
+"Makefile" = "🔧"
+".gitignore" = "🚫"
+```
+
+#### Features
+
+- **Preview pane**: Shows file contents with syntax highlighting (like the built-in picker)
+- **Git status indicators**: Shows `M` (modified), `A` (added), `D` (deleted), `?` (untracked)
+- **File sizes**: Displayed next to each file
+- **Open file highlighting**: Currently open files are highlighted in bold
+- **Session resume**: Close with `q` and resume with `:ftr` to restore your exact state
+
+---
+
+## Upstream Helix
+
+This fork tracks the upstream [Helix editor](https://github.com/helix-editor/helix). For:
+
+- **Core documentation**: [docs.helix-editor.com](https://docs.helix-editor.com/)
+- **Keybindings**: [Keymap documentation](https://docs.helix-editor.com/keymap.html)
+- **Themes**: [Theme documentation](https://docs.helix-editor.com/themes.html)
+- **Languages**: [Language support](https://docs.helix-editor.com/lang-support.html)
+- **Troubleshooting**: [Wiki](https://github.com/helix-editor/helix/wiki/Troubleshooting)
+
+---
+
+## License
+
+[MPL-2.0](./LICENSE) - Same as upstream Helix.

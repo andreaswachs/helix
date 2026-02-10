@@ -2773,6 +2773,43 @@ fn file_tree_toggle(
     Ok(())
 }
 
+fn file_tree_resume(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let callback = async move {
+        let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                // If already open, close it first
+                if compositor.remove(ui::file_tree::ID).is_some() {
+                    return;
+                }
+
+                // Try to resume from saved state
+                if let Some(state) = ui::file_tree::get_last_state() {
+                    let tree = ui::FileTree::from_state(state, editor);
+                    compositor.push(Box::new(overlaid(tree)));
+                } else {
+                    // No saved state, open a fresh tree
+                    let root = helix_core::find_workspace().0;
+                    if root.exists() {
+                        let tree = ui::FileTree::new(root, editor);
+                        compositor.push(Box::new(overlaid(tree)));
+                    }
+                }
+            },
+        ));
+        Ok(call)
+    };
+    cx.jobs.callback(callback);
+    Ok(())
+}
+
 fn noop(_cx: &mut compositor::Context, _args: Args, _event: PromptEvent) -> anyhow::Result<()> {
     Ok(())
 }
@@ -3844,6 +3881,14 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["ft", "tree"],
         doc: "Toggle the file tree panel.",
         fun: file_tree_toggle,
+        completer: CommandCompleter::none(),
+        signature: Signature::DEFAULT,
+    },
+    TypableCommand {
+        name: "file-tree-resume",
+        aliases: &["ftr", "tree-resume"],
+        doc: "Resume the last file tree session (restores search, position, and state).",
+        fun: file_tree_resume,
         completer: CommandCompleter::none(),
         signature: Signature::DEFAULT,
     },

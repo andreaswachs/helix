@@ -407,6 +407,7 @@ impl MappableCommand {
         file_explorer_in_current_buffer_directory, "Open file explorer at current buffer's directory",
         file_explorer_in_current_directory, "Open file explorer at current working directory",
         file_tree_toggle, "Toggle file tree panel",
+        file_tree_resume, "Resume last file tree session",
         code_action, "Perform code action",
         buffer_picker, "Open buffer picker",
         jumplist_picker, "Open jumplist picker",
@@ -3172,6 +3173,38 @@ fn file_tree_toggle(cx: &mut Context) {
             }
             let tree = ui::FileTree::new(root, cx.editor);
             compositor.push(Box::new(overlaid(tree)));
+        },
+    );
+    cx.callback.push(callback);
+}
+
+fn file_tree_resume(cx: &mut Context) {
+    // Check if there's a saved state to resume
+    if !ui::file_tree::has_saved_state() {
+        // No saved state, just open a fresh file tree
+        file_tree_toggle(cx);
+        return;
+    }
+
+    let callback = Box::new(
+        move |compositor: &mut Compositor, cx: &mut compositor::Context| {
+            // If already open, close it first (toggle behavior)
+            if compositor.remove(ui::file_tree::ID).is_some() {
+                return;
+            }
+
+            // Try to resume from saved state
+            if let Some(state) = ui::file_tree::get_last_state() {
+                let tree = ui::FileTree::from_state(state, cx.editor);
+                compositor.push(Box::new(overlaid(tree)));
+            } else {
+                // Fallback to fresh tree if state is somehow unavailable
+                let root = find_workspace().0;
+                if root.exists() {
+                    let tree = ui::FileTree::new(root, cx.editor);
+                    compositor.push(Box::new(overlaid(tree)));
+                }
+            }
         },
     );
     cx.callback.push(callback);
