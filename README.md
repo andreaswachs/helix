@@ -70,6 +70,13 @@ f = "file_tree_toggle"
 | `Ctrl+g` | Go to folder (fuzzy search directories) |
 | `f` | Jump to currently open file |
 
+**Input Mode (search/add/rename):**
+| Key | Action |
+|-----|--------|
+| `Ctrl+w` / `Cmd+Backspace` | Delete word backwards |
+| `Ctrl+u` / `Cmd+u` | Clear entire line |
+| `Ctrl+v` / `Cmd+v` | Paste from clipboard |
+
 **File Operations:**
 | Key | Action |
 |-----|--------|
@@ -89,7 +96,7 @@ f = "file_tree_toggle"
 |-----|--------|
 | `R` | Refresh tree and git status |
 | `Ctrl+s` | Open in horizontal split |
-| `Ctrl+v` | Open in vertical split |
+| `Ctrl+v` | Open in vertical split (normal mode only) |
 | `?` | Toggle help |
 | `q` / `Esc` | Close (state is saved for resume) |
 

@@ -11,7 +11,7 @@ use helix_core::{text_annotations::TextAnnotations, Position};
 use helix_view::{
     editor::{Action, FileTreeConfig},
     graphics::{CursorKind, Margin, Modifier, Rect},
-    keyboard::KeyCode,
+    keyboard::{KeyCode, KeyModifiers},
     view::ViewPosition,
     Document, Editor,
 };
@@ -152,6 +152,41 @@ struct SearchResult {
 /// Fuzzy match result with score
 struct FuzzyMatch {
     score: i64,
+}
+
+/// Check if an event is a paste command (Ctrl+V or Cmd+V on macOS)
+fn is_paste_event(event: &helix_view::input::KeyEvent) -> bool {
+    if let KeyCode::Char('v') = event.code {
+        event.modifiers.contains(KeyModifiers::CONTROL)
+            || event.modifiers.contains(KeyModifiers::SUPER)
+    } else {
+        false
+    }
+}
+
+/// Check if an event is a delete word command (Ctrl+W or Cmd+Backspace on macOS)
+fn is_delete_word_event(event: &helix_view::input::KeyEvent) -> bool {
+    // Ctrl+W
+    if let KeyCode::Char('w') = event.code {
+        if event.modifiers.contains(KeyModifiers::CONTROL) {
+            return true;
+        }
+    }
+    // Cmd+Backspace (macOS style)
+    if event.code == KeyCode::Backspace && event.modifiers.contains(KeyModifiers::SUPER) {
+        return true;
+    }
+    false
+}
+
+/// Check if an event is a clear line command (Ctrl+U or Cmd+U)
+fn is_clear_line_event(event: &helix_view::input::KeyEvent) -> bool {
+    if let KeyCode::Char('u') = event.code {
+        event.modifiers.contains(KeyModifiers::CONTROL)
+            || event.modifiers.contains(KeyModifiers::SUPER)
+    } else {
+        false
+    }
 }
 
 /// Perform fzf-style fuzzy matching on a string
@@ -974,6 +1009,85 @@ impl FileTree {
         }
     }
 
+    /// Delete word backwards (Ctrl+W behavior)
+    fn handle_input_delete_word(&mut self, config: &FileTreeConfig) {
+        if self.input_cursor == 0 {
+            return;
+        }
+
+        // Find the start of the word to delete
+        let chars: Vec<char> = self.input_buffer.chars().collect();
+        let mut new_cursor = self.input_cursor;
+
+        // Skip any trailing whitespace/separators
+        while new_cursor > 0 {
+            let c = chars[new_cursor - 1];
+            if c.is_alphanumeric() || c == '_' {
+                break;
+            }
+            new_cursor -= 1;
+        }
+
+        // Delete the word characters
+        while new_cursor > 0 {
+            let c = chars[new_cursor - 1];
+            if !c.is_alphanumeric() && c != '_' {
+                break;
+            }
+            new_cursor -= 1;
+        }
+
+        // Remove characters from new_cursor to input_cursor
+        if new_cursor < self.input_cursor {
+            self.input_buffer = chars[..new_cursor]
+                .iter()
+                .chain(chars[self.input_cursor..].iter())
+                .collect();
+            self.input_cursor = new_cursor;
+
+            match self.input_mode {
+                InputMode::Search => self.perform_search(config),
+                InputMode::GoToFolder => self.perform_folder_search(config),
+                _ => {}
+            }
+        }
+    }
+
+    /// Paste text from clipboard
+    fn handle_input_paste(&mut self, cx: &mut Context, config: &FileTreeConfig) {
+        // Read from the '+' register (system clipboard)
+        if let Some(contents) = cx.editor.registers.read('+', cx.editor) {
+            let text: String = contents
+                .into_iter()
+                .flat_map(|s| s.chars().filter(|c| *c != '\n' && *c != '\r').collect::<Vec<_>>())
+                .collect();
+
+            if !text.is_empty() {
+                // Insert at cursor position
+                self.input_buffer.insert_str(self.input_cursor, &text);
+                self.input_cursor += text.len();
+
+                match self.input_mode {
+                    InputMode::Search => self.perform_search(config),
+                    InputMode::GoToFolder => self.perform_folder_search(config),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    /// Clear the entire input buffer (Ctrl+U behavior)
+    fn handle_input_clear(&mut self, config: &FileTreeConfig) {
+        self.input_buffer.clear();
+        self.input_cursor = 0;
+
+        match self.input_mode {
+            InputMode::Search => self.perform_search(config),
+            InputMode::GoToFolder => self.perform_folder_search(config),
+            _ => {}
+        }
+    }
+
     /// Get the directory where new files should be created
     fn get_target_directory(&self) -> PathBuf {
         if let Some(entry) = self.selected_entry() {
@@ -1301,9 +1415,14 @@ impl FileTree {
             ("  Ctrl+d/u", "Page down/up"),
             ("", ""),
             ("Search & Jump", ""),
-            ("  /", "Search files"),
+            ("  /", "Search files (fuzzy)"),
             ("  Ctrl+g", "Go to folder"),
             ("  f", "Jump to current file"),
+            ("", ""),
+            ("Input (in search/add/rename)", ""),
+            ("  Ctrl/Cmd+w", "Delete word"),
+            ("  Ctrl/Cmd+u", "Clear line"),
+            ("  Ctrl/Cmd+v", "Paste"),
             ("", ""),
             ("File Operations", ""),
             ("  a", "Add file/directory"),
@@ -1311,14 +1430,11 @@ impl FileTree {
             ("  r", "Rename"),
             ("  y", "Copy path"),
             ("", ""),
-            ("Preview", ""),
+            ("Preview & Other", ""),
             ("  p", "Toggle preview"),
             ("  Ctrl+j/k", "Scroll preview"),
-            ("", ""),
-            ("Other", ""),
             ("  R", "Refresh tree"),
             ("  Ctrl+s", "Open in h-split"),
-            ("  Ctrl+v", "Open in v-split"),
             ("  ?", "Toggle help"),
             ("  q/Esc", "Close (use :ftr to resume)"),
         ];
@@ -1402,6 +1518,21 @@ impl Component for FileTree {
                         self.handle_input_backspace(&config.file_tree);
                         return EventResult::Consumed(None);
                     }
+                    // Delete word backwards (Ctrl+W or Cmd+Backspace)
+                    _ if is_delete_word_event(&event) => {
+                        self.handle_input_delete_word(&config.file_tree);
+                        return EventResult::Consumed(None);
+                    }
+                    // Clear entire line (Ctrl+U or Cmd+U)
+                    _ if is_clear_line_event(&event) => {
+                        self.handle_input_clear(&config.file_tree);
+                        return EventResult::Consumed(None);
+                    }
+                    // Paste from clipboard (Ctrl+V or Cmd+V)
+                    _ if is_paste_event(&event) => {
+                        self.handle_input_paste(cx, &config.file_tree);
+                        return EventResult::Consumed(None);
+                    }
                     key!(Down) | ctrl!('n') => {
                         self.move_cursor(1);
                         return EventResult::Consumed(None);
@@ -1415,18 +1546,6 @@ impl Component for FileTree {
                             if !result.is_dir {
                                 let path = result.path.clone();
                                 if let Err(e) = cx.editor.open(&path, Action::HorizontalSplit) {
-                                    cx.editor.set_error(format!("Failed to open file: {}", e));
-                                }
-                                return EventResult::Consumed(Some(close_fn));
-                            }
-                        }
-                        return EventResult::Consumed(None);
-                    }
-                    ctrl!('v') => {
-                        if let Some(result) = self.selected_search_result() {
-                            if !result.is_dir {
-                                let path = result.path.clone();
-                                if let Err(e) = cx.editor.open(&path, Action::VerticalSplit) {
                                     cx.editor.set_error(format!("Failed to open file: {}", e));
                                 }
                                 return EventResult::Consumed(Some(close_fn));
@@ -1481,6 +1600,21 @@ impl Component for FileTree {
                         self.handle_input_backspace(&config.file_tree);
                         return EventResult::Consumed(None);
                     }
+                    // Delete word backwards (Ctrl+W or Cmd+Backspace)
+                    _ if is_delete_word_event(&event) => {
+                        self.handle_input_delete_word(&config.file_tree);
+                        return EventResult::Consumed(None);
+                    }
+                    // Clear entire line (Ctrl+U or Cmd+U)
+                    _ if is_clear_line_event(&event) => {
+                        self.handle_input_clear(&config.file_tree);
+                        return EventResult::Consumed(None);
+                    }
+                    // Paste from clipboard (Ctrl+V or Cmd+V)
+                    _ if is_paste_event(&event) => {
+                        self.handle_input_paste(cx, &config.file_tree);
+                        return EventResult::Consumed(None);
+                    }
                     key!(Down) | ctrl!('n') => {
                         self.move_cursor(1);
                         return EventResult::Consumed(None);
@@ -1526,6 +1660,18 @@ impl Component for FileTree {
                         self.handle_input_backspace(&config.file_tree);
                         return EventResult::Consumed(None);
                     }
+                    _ if is_delete_word_event(&event) => {
+                        self.handle_input_delete_word(&config.file_tree);
+                        return EventResult::Consumed(None);
+                    }
+                    _ if is_clear_line_event(&event) => {
+                        self.handle_input_clear(&config.file_tree);
+                        return EventResult::Consumed(None);
+                    }
+                    _ if is_paste_event(&event) => {
+                        self.handle_input_paste(cx, &config.file_tree);
+                        return EventResult::Consumed(None);
+                    }
                     _ => {
                         if let KeyCode::Char(c) = event.code {
                             if event.modifiers.is_empty() {
@@ -1561,6 +1707,18 @@ impl Component for FileTree {
                     }
                     key!(Backspace) => {
                         self.handle_input_backspace(&config.file_tree);
+                        return EventResult::Consumed(None);
+                    }
+                    _ if is_delete_word_event(&event) => {
+                        self.handle_input_delete_word(&config.file_tree);
+                        return EventResult::Consumed(None);
+                    }
+                    _ if is_clear_line_event(&event) => {
+                        self.handle_input_clear(&config.file_tree);
+                        return EventResult::Consumed(None);
+                    }
+                    _ if is_paste_event(&event) => {
+                        self.handle_input_paste(cx, &config.file_tree);
                         return EventResult::Consumed(None);
                     }
                     _ => {
