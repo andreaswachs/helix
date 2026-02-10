@@ -629,21 +629,37 @@ impl FileTree {
         }
     }
 
-    /// Copy the selected file's path to clipboard
-    fn copy_path_to_clipboard(&self, cx: &mut Context) {
-        let path = if self.input_mode == InputMode::Search
-            || self.input_mode == InputMode::GoToFolder
-        {
+    /// Get the currently selected path (works in both normal and search modes)
+    fn get_selected_path(&self) -> Option<PathBuf> {
+        if self.input_mode == InputMode::Search || self.input_mode == InputMode::GoToFolder {
             self.selected_search_result().map(|r| r.path.clone())
         } else {
             self.selected_entry().map(|e| e.path.clone())
-        };
+        }
+    }
 
-        if let Some(path) = path {
-            let path_str = path.to_string_lossy().to_string();
-            // Use helix's clipboard register '+'
-            match cx.editor.registers.write('+', vec![path_str.clone()]) {
-                Ok(_) => cx.editor.set_status(format!("Copied: {}", path_str)),
+    /// Copy the selected file's relative path to clipboard
+    fn copy_relative_path_to_clipboard(&self, cx: &mut Context) {
+        if let Some(path) = self.get_selected_path() {
+            let relative_path = path
+                .strip_prefix(&self.root)
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|_| path.to_string_lossy().to_string());
+
+            match cx.editor.registers.write('+', vec![relative_path.clone()]) {
+                Ok(_) => cx.editor.set_status(format!("Copied: {}", relative_path)),
+                Err(e) => cx.editor.set_error(format!("Failed to copy: {}", e)),
+            }
+        }
+    }
+
+    /// Copy the selected file's absolute path to clipboard
+    fn copy_absolute_path_to_clipboard(&self, cx: &mut Context) {
+        if let Some(path) = self.get_selected_path() {
+            let absolute_path = path.to_string_lossy().to_string();
+
+            match cx.editor.registers.write('+', vec![absolute_path.clone()]) {
+                Ok(_) => cx.editor.set_status(format!("Copied: {}", absolute_path)),
                 Err(e) => cx.editor.set_error(format!("Failed to copy: {}", e)),
             }
         }
@@ -1470,7 +1486,8 @@ impl FileTree {
             ("  a", "Add file/directory"),
             ("  d", "Delete"),
             ("  r", "Rename"),
-            ("  y", "Copy path"),
+            ("  y", "Copy relative path"),
+            ("  Y", "Copy absolute path"),
             ("", ""),
             ("Preview & Other", ""),
             ("  p", "Toggle preview"),
@@ -1926,9 +1943,14 @@ impl Component for FileTree {
                         self.refresh(cx.editor);
                         return EventResult::Consumed(None);
                     }
-                    // Copy path to clipboard
+                    // Copy relative path to clipboard
                     key!('y') => {
-                        self.copy_path_to_clipboard(cx);
+                        self.copy_relative_path_to_clipboard(cx);
+                        return EventResult::Consumed(None);
+                    }
+                    // Copy absolute path to clipboard
+                    key!('Y') => {
+                        self.copy_absolute_path_to_clipboard(cx);
                         return EventResult::Consumed(None);
                     }
                     // Toggle preview

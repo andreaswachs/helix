@@ -83,7 +83,8 @@ f = "file_tree_toggle"
 | `a` | Add file (end with `/` for directory) |
 | `d` | Delete file/directory |
 | `r` | Rename |
-| `y` | Copy path to clipboard |
+| `y` | Copy relative path to clipboard |
+| `Y` | Copy absolute path to clipboard |
 
 **Preview:**
 | Key | Action |
